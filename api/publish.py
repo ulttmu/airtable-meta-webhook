@@ -69,6 +69,19 @@ def drive_url_to_direct(url):
     return url
 
 
+def get_image_url(url):
+    """取得可直接訪問的圖片 URL"""
+    if not url:
+        return url
+    # Airtable CDN URL 可直接使用
+    if 'airtableusercontent.com' in url:
+        return url
+    # Google Drive URL 需要轉換
+    if 'drive.google.com' in url:
+        return drive_url_to_direct(url)
+    return url
+
+
 def publish_to_facebook(content, image_urls, scheduled_timestamp=None):
     """發布到 Facebook"""
     if not META_PAGE_ID or not META_PAGE_TOKEN:
@@ -78,7 +91,7 @@ def publish_to_facebook(content, image_urls, scheduled_timestamp=None):
         if len(image_urls) == 1:
             # 單圖
             data = {
-                'url': drive_url_to_direct(image_urls[0]),
+                'url': get_image_url(image_urls[0]),
                 'caption': content,
             }
             if scheduled_timestamp:
@@ -92,7 +105,7 @@ def publish_to_facebook(content, image_urls, scheduled_timestamp=None):
             photo_ids = []
             for img_url in image_urls[:10]:
                 result = meta_request(f"{META_PAGE_ID}/photos", {
-                    'url': drive_url_to_direct(img_url),
+                    'url': get_image_url(img_url),
                     'published': 'false'
                 })
                 if 'id' in result:
@@ -154,21 +167,42 @@ def process_record(record_id):
     scheduled_date = fields.get('排程日期')
     scheduled_time = fields.get('排程時間', '10:00')
 
-    # 取得選中的圖片
+    # 取得圖片 - 優先使用「圖片預覽」attachment（Airtable CDN URL 可直接訪問）
     image_urls = []
-    for key in ['1A', '1B', '1C', '2A', '2B', '2C', '3A', '3B', '3C']:
-        if fields.get(f'選用_{key}'):
-            url = fields.get(f'生成圖片_{key}')
-            if url:
-                image_urls.append(url)
+    preview_attachments = fields.get('圖片預覽', [])
 
-    # 如果沒選圖，用第一張有 URL 的
+    if preview_attachments:
+        # 檢查有沒有勾選特定圖片
+        selected_indices = []
+        keys = ['1A', '1B', '1C', '2A', '2B', '2C', '3A', '3B', '3C']
+        for i, key in enumerate(keys):
+            if fields.get(f'選用_{key}'):
+                selected_indices.append(i)
+
+        if selected_indices:
+            # 使用勾選的圖片（按 attachment 順序）
+            for i in selected_indices:
+                if i < len(preview_attachments):
+                    image_urls.append(preview_attachments[i].get('url'))
+        else:
+            # 沒有勾選，使用第一張
+            image_urls.append(preview_attachments[0].get('url'))
+
+    # Fallback: 使用 Google Drive URL（需轉換）
     if not image_urls:
         for key in ['1A', '1B', '1C', '2A', '2B', '2C', '3A', '3B', '3C']:
-            url = fields.get(f'生成圖片_{key}')
-            if url:
-                image_urls.append(url)
-                break
+            if fields.get(f'選用_{key}'):
+                url = fields.get(f'生成圖片_{key}')
+                if url:
+                    image_urls.append(url)
+
+        # 如果還是沒有，用第一張有 URL 的
+        if not image_urls:
+            for key in ['1A', '1B', '1C', '2A', '2B', '2C', '3A', '3B', '3C']:
+                url = fields.get(f'生成圖片_{key}')
+                if url:
+                    image_urls.append(url)
+                    break
 
     if not image_urls:
         update_airtable_status(record_id, '發布失敗', error='沒有可用的圖片')
