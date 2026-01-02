@@ -208,14 +208,18 @@ def process_record(record_id):
         update_airtable_status(record_id, '發布失敗', error='沒有可用的圖片')
         return {'error': 'No images available'}
 
-    # 計算排程時間
+    # 計算排程時間（用戶輸入的是台灣時間 UTC+8）
     scheduled_timestamp = None
     if scheduled_date:
         try:
             dt_str = f"{scheduled_date} {scheduled_time or '10:00'}"
             dt = datetime.strptime(dt_str, "%Y-%m-%d %H:%M")
-            # 轉換為 UTC+8 的 timestamp
-            scheduled_timestamp = int(dt.timestamp()) + 8 * 3600  # 簡化處理
+            # 用戶輸入台灣時間，轉換為 UTC timestamp
+            # 台灣時間 = UTC + 8，所以 UTC = 台灣時間 - 8 小時
+            from datetime import timezone, timedelta
+            taiwan_tz = timezone(timedelta(hours=8))
+            dt_taiwan = dt.replace(tzinfo=taiwan_tz)
+            scheduled_timestamp = int(dt_taiwan.timestamp())
         except:
             pass
 
