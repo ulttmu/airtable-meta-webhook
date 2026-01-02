@@ -167,42 +167,14 @@ def process_record(record_id):
     scheduled_date = fields.get('排程日期')
     scheduled_time = fields.get('排程時間', '10:00')
 
-    # 取得圖片 - 優先使用「圖片預覽」attachment（Airtable CDN URL 可直接訪問）
+    # 取得圖片 - 直接使用「圖片預覽」attachment 的所有圖片
     image_urls = []
     preview_attachments = fields.get('圖片預覽', [])
 
-    if preview_attachments:
-        # 檢查有沒有勾選特定圖片
-        selected_indices = []
-        keys = ['1A', '1B', '1C', '2A', '2B', '2C', '3A', '3B', '3C']
-        for i, key in enumerate(keys):
-            if fields.get(f'選用_{key}'):
-                selected_indices.append(i)
-
-        if selected_indices:
-            # 使用勾選的圖片（按 attachment 順序）
-            for i in selected_indices:
-                if i < len(preview_attachments):
-                    image_urls.append(preview_attachments[i].get('url'))
-        else:
-            # 沒有勾選，使用第一張
-            image_urls.append(preview_attachments[0].get('url'))
-
-    # Fallback: 使用 Google Drive URL（需轉換）
-    if not image_urls:
-        for key in ['1A', '1B', '1C', '2A', '2B', '2C', '3A', '3B', '3C']:
-            if fields.get(f'選用_{key}'):
-                url = fields.get(f'生成圖片_{key}')
-                if url:
-                    image_urls.append(url)
-
-        # 如果還是沒有，用第一張有 URL 的
-        if not image_urls:
-            for key in ['1A', '1B', '1C', '2A', '2B', '2C', '3A', '3B', '3C']:
-                url = fields.get(f'生成圖片_{key}')
-                if url:
-                    image_urls.append(url)
-                    break
+    for attachment in preview_attachments:
+        url = attachment.get('url')
+        if url:
+            image_urls.append(url)
 
     if not image_urls:
         update_airtable_status(record_id, '發布失敗', error='沒有可用的圖片')
