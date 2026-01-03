@@ -7,10 +7,11 @@ Vercel Serverless Function
 
 import os
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler
 import urllib.request
 import urllib.parse
+import pytz
 
 # 環境變數（在 Vercel 設定）
 AIRTABLE_TOKEN = os.environ.get('AIRTABLE_TOKEN')
@@ -43,7 +44,7 @@ def airtable_request(method, endpoint, data=None):
 
 def meta_request(endpoint, data):
     """Meta Graph API 請求"""
-    url = f"https://graph.facebook.com/v18.0/{endpoint}"
+    url = f"https://graph.facebook.com/v21.0/{endpoint}"
     data['access_token'] = META_PAGE_TOKEN
 
     post_data = urllib.parse.urlencode(data).encode('utf-8')
@@ -140,6 +141,22 @@ def publish_to_facebook(content, image_urls, scheduled_timestamp=None):
         return {'success': False, 'error': str(e)}
 
 
+def log_to_publishing_log(record_id, platform, action, post_id=None, error=None):
+    """記錄到 Publishing_Log 表"""
+    fields = {
+        '時間': datetime.now().isoformat(),
+        '內容': [record_id],  # Link to Contents record
+        '平台': platform,
+        '動作': action,  # "發布" 或 "排程"
+    }
+    if post_id:
+        fields['Post_ID'] = post_id
+    if error:
+        fields['錯誤訊息'] = error
+
+    airtable_request('POST', 'Publishing_Log', {'fields': fields})
+
+
 def update_airtable_status(record_id, status, fb_id=None, error=None):
     """更新 Airtable 記錄狀態"""
     fields = {
@@ -155,13 +172,31 @@ def update_airtable_status(record_id, status, fb_id=None, error=None):
 
 
 def process_record(record_id):
-    """處理單一記錄"""
+    """處理單一記錄（含幂等性檢查）"""
     # 取得記錄
     record = airtable_request('GET', f"Contents/{record_id}")
     if not record:
         return {'error': 'Record not found'}
 
     fields = record.get('fields', {})
+
+    # 幂等性檢查 1：已經發布過
+    current_status = fields.get('發布狀態', '')
+    if current_status in ['已發布', '已排程']:
+        return {
+            'skipped': True,
+            'reason': f'Already {current_status}',
+            'post_id': fields.get('FB_Post_ID')
+        }
+
+    # 幂等性檢查 2：已有 Post ID
+    if fields.get('FB_Post_ID'):
+        return {
+            'skipped': True,
+            'reason': 'Already has FB Post ID',
+            'post_id': fields.get('FB_Post_ID')
+        }
+
     content = fields.get('內容', '')
     platform = fields.get('發布平台', 'Facebook')
     scheduled_date = fields.get('排程日期')
@@ -184,16 +219,31 @@ def process_record(record_id):
     scheduled_timestamp = None
     if scheduled_date:
         try:
+            # 使用 pytz 正確處理時區
+            taiwan_tz = pytz.timezone('Asia/Taipei')
+
+            # 組合日期和時間
             dt_str = f"{scheduled_date} {scheduled_time or '10:00'}"
-            dt = datetime.strptime(dt_str, "%Y-%m-%d %H:%M")
-            # 用戶輸入台灣時間，轉換為 UTC timestamp
-            # 台灣時間 = UTC + 8，所以 UTC = 台灣時間 - 8 小時
-            from datetime import timezone, timedelta
-            taiwan_tz = timezone(timedelta(hours=8))
-            dt_taiwan = dt.replace(tzinfo=taiwan_tz)
+            dt_naive = datetime.strptime(dt_str, "%Y-%m-%d %H:%M")
+
+            # localize 到台灣時區（正確方法）
+            dt_taiwan = taiwan_tz.localize(dt_naive)
+
+            # 轉換為 UTC timestamp
             scheduled_timestamp = int(dt_taiwan.timestamp())
-        except:
-            pass
+
+            # 驗證時間範圍（至少 15 分鐘後）
+            now_taipei = datetime.now(taiwan_tz)
+            min_time = now_taipei + timedelta(minutes=15)
+
+            if dt_taiwan < min_time:
+                # 排程時間太近，改為立即發布
+                scheduled_timestamp = None
+                print(f"排程時間太近（{dt_taiwan}），改為立即發布")
+
+        except Exception as e:
+            print(f"排程時間解析錯誤: {e}")
+            scheduled_timestamp = None
 
     # 發布
     result = {'record_id': record_id}
@@ -204,9 +254,12 @@ def process_record(record_id):
 
         if fb_result['success']:
             status = '已排程' if scheduled_timestamp else '已發布'
+            action = '排程' if scheduled_timestamp else '發布'
             update_airtable_status(record_id, status, fb_id=fb_result.get('post_id'))
+            log_to_publishing_log(record_id, 'Facebook', action, post_id=fb_result.get('post_id'))
         else:
             update_airtable_status(record_id, '發布失敗', error=fb_result.get('error'))
+            log_to_publishing_log(record_id, 'Facebook', '發布', error=fb_result.get('error'))
 
     return result
 
