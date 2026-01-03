@@ -199,8 +199,7 @@ def process_record(record_id):
 
     content = fields.get('內容', '')
     platform = fields.get('發布平台', 'Facebook')
-    scheduled_date = fields.get('排程日期')
-    scheduled_time = fields.get('排程時間', '10:00')
+    scheduled_datetime = fields.get('發布時間')  # Airtable DateTime 欄位 (ISO 8601 格式)
 
     # 取得圖片 - 直接使用「圖片預覽」attachment 的所有圖片
     image_urls = []
@@ -215,19 +214,27 @@ def process_record(record_id):
         update_airtable_status(record_id, '發布失敗', error='沒有可用的圖片')
         return {'error': 'No images available'}
 
-    # 計算排程時間（用戶輸入的是台灣時間 UTC+8）
+    # 計算排程時間（解析 Airtable DateTime 欄位）
     scheduled_timestamp = None
-    if scheduled_date:
+    if scheduled_datetime:
         try:
-            # 使用 pytz 正確處理時區
             taiwan_tz = pytz.timezone('Asia/Taipei')
 
-            # 組合日期和時間
-            dt_str = f"{scheduled_date} {scheduled_time or '10:00'}"
-            dt_naive = datetime.strptime(dt_str, "%Y-%m-%d %H:%M")
+            # Airtable DateTime 欄位格式: "2026-01-05T14:00:00.000Z" 或 "2026-01-05T14:00:00"
+            # 移除毫秒部分以便解析
+            dt_str = scheduled_datetime.replace('.000Z', 'Z').replace('.000', '')
 
-            # localize 到台灣時區（正確方法）
-            dt_taiwan = taiwan_tz.localize(dt_naive)
+            # 解析 ISO 8601 格式
+            if dt_str.endswith('Z'):
+                # UTC 時間，需轉換為台灣時間理解
+                dt_utc = datetime.strptime(dt_str, "%Y-%m-%dT%H:%M:%SZ")
+                dt_utc = pytz.utc.localize(dt_utc)
+                # 轉換到台灣時區檢查
+                dt_taiwan = dt_utc.astimezone(taiwan_tz)
+            else:
+                # 假設是台灣時間（用戶在 UI 選的時間）
+                dt_naive = datetime.strptime(dt_str, "%Y-%m-%dT%H:%M:%S")
+                dt_taiwan = taiwan_tz.localize(dt_naive)
 
             # 轉換為 UTC timestamp
             scheduled_timestamp = int(dt_taiwan.timestamp())
@@ -239,10 +246,10 @@ def process_record(record_id):
             if dt_taiwan < min_time:
                 # 排程時間太近，改為立即發布
                 scheduled_timestamp = None
-                print(f"排程時間太近（{dt_taiwan}），改為立即發布")
+                print(f"排程時間太近（{dt_taiwan.strftime('%Y-%m-%d %H:%M')}），改為立即發布")
 
         except Exception as e:
-            print(f"排程時間解析錯誤: {e}")
+            print(f"發布時間解析錯誤: {e}, 原始值: {scheduled_datetime}")
             scheduled_timestamp = None
 
     # 發布
